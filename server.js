@@ -247,8 +247,12 @@ async function processChat(session, res) {
       // Add assistant message with tool calls to history
       session.messages.push({
         role: 'assistant',
-        content: result.content || null,
-        tool_calls: result.toolCalls,
+        content: result.content || '',
+        tool_calls: result.toolCalls.map(tc => ({
+          id: tc.id,
+          type: 'function',
+          function: tc.function,
+        })),
       });
 
       // Execute each tool call via MCP
@@ -330,6 +334,8 @@ async function callDeepSeek(messages, res) {
         continue;
       }
       if (!response.ok) {
+        const errorBody = await response.text();
+        console.error('DeepSeek API error body:', errorBody);
         throw new Error(`DeepSeek API error: ${response.status} ${response.statusText}`);
       }
       break;
