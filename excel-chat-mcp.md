@@ -1,4 +1,4 @@
-# Coding Prompt: Excel Chat — LLM-Powered Excel Query Interface with MCP
+# Excel Chat — LLM-Powered Excel Query Interface with MCP
 
 ## Project Overview
 
