@@ -4,6 +4,7 @@ import {
   ListToolsRequestSchema,
   CallToolRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
+import ExcelJS from 'exceljs';
 import * as XLSX from 'xlsx';
 import fs from 'fs';
 import path from 'path';
@@ -29,7 +30,91 @@ function errorContent(msg) {
   return { content: [{ type: 'text', text: `Error: ${msg}` }], isError: true };
 }
 
-// Infer predominant data type for a column
+// --- File reading abstraction ---
+// Uses ExcelJS for .xlsx (handles Microsoft 365 files), SheetJS for .xls and .csv
+
+async function readWorkbook(filepath) {
+  const ext = path.extname(filepath).toLowerCase();
+
+  if (ext === '.xlsx') {
+    return readWithExcelJS(filepath);
+  }
+  // .xls and .csv: use SheetJS
+  return readWithSheetJS(filepath);
+}
+
+async function readWithExcelJS(filepath) {
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.readFile(filepath);
+
+  const sheetNames = workbook.worksheets.map(ws => ws.name);
+  const sheets = {};
+
+  for (const ws of workbook.worksheets) {
+    const rows = [];
+    const headers = [];
+
+    ws.eachRow((row, rowNumber) => {
+      if (rowNumber === 1) {
+        // Header row
+        row.eachCell((cell, colNumber) => {
+          headers[colNumber] = cellValue(cell);
+        });
+      } else {
+        const obj = {};
+        row.eachCell((cell, colNumber) => {
+          const header = headers[colNumber];
+          if (header !== undefined && header !== null) {
+            obj[header] = cellValue(cell);
+          }
+        });
+        // Only add row if it has at least one value
+        if (Object.keys(obj).length > 0) {
+          rows.push(obj);
+        }
+      }
+    });
+
+    sheets[ws.name] = { headers: headers.filter(h => h !== undefined && h !== null), rows };
+  }
+
+  return { sheetNames, sheets };
+}
+
+function cellValue(cell) {
+  if (cell.value === null || cell.value === undefined) return null;
+
+  // ExcelJS returns rich objects for some types
+  if (cell.value instanceof Date) {
+    return cell.value.toISOString().split('T')[0];
+  }
+  if (typeof cell.value === 'object') {
+    // Hyperlinks, rich text, formulas, etc.
+    if (cell.value.result !== undefined) return cell.value.result; // formula result
+    if (cell.value.text) return cell.value.text; // hyperlink or rich text
+    if (cell.value.richText) return cell.value.richText.map(r => r.text).join('');
+    return String(cell.value);
+  }
+  return cell.value;
+}
+
+function readWithSheetJS(filepath) {
+  const workbook = XLSX.readFile(filepath);
+  const sheetNames = workbook.SheetNames;
+  const sheets = {};
+
+  for (const name of sheetNames) {
+    const worksheet = workbook.Sheets[name];
+    const rows = XLSX.utils.sheet_to_json(worksheet);
+    const headers = rows.length > 0 ? Object.keys(rows[0]) : [];
+    sheets[name] = { headers, rows };
+  }
+
+  return { sheetNames, sheets };
+}
+
+// --- Helper functions ---
+
 function inferType(values) {
   const counts = { number: 0, string: 0, boolean: 0, date: 0, empty: 0 };
   for (const v of values) {
@@ -42,7 +127,6 @@ function inferType(values) {
     } else if (v instanceof Date) {
       counts.date++;
     } else if (typeof v === 'string') {
-      // Check if it looks like a date
       if (!isNaN(Date.parse(v)) && /\d{4}[-/]\d{1,2}[-/]\d{1,2}/.test(v)) {
         counts.date++;
       } else if (!isNaN(Number(v)) && v.trim() !== '') {
@@ -65,7 +149,6 @@ function inferType(values) {
   return max;
 }
 
-// Apply a single filter condition to a row
 function applyFilter(row, filter) {
   const val = row[filter.column];
   const target = filter.value;
@@ -84,7 +167,6 @@ function applyFilter(row, filter) {
   }
 }
 
-// Compute an aggregation over an array of numeric values
 function computeAggregation(values, func) {
   const nums = values.map(Number).filter(n => !isNaN(n));
   if (nums.length === 0) return null;
@@ -97,6 +179,8 @@ function computeAggregation(values, func) {
     default: return null;
   }
 }
+
+// --- MCP Server ---
 
 const server = new Server(
   { name: 'excel-mcp-server', version: '1.0.0' },
@@ -197,6 +281,16 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
   return { tools };
 });
 
+// Helper to get sheet data from parsed workbook
+function getSheet(wb, sheetName) {
+  const name = sheetName || wb.sheetNames[0];
+  const sheet = wb.sheets[name];
+  if (!sheet) {
+    throw new Error(`Sheet not found: ${name}. Available sheets: ${wb.sheetNames.join(', ')}`);
+  }
+  return { name, ...sheet };
+}
+
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
 
@@ -217,8 +311,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (!fs.existsSync(filepath)) {
           return errorContent(`File not found: ${args.filename}`);
         }
-        const workbook = XLSX.readFile(filepath);
-        return textContent(workbook.SheetNames);
+        const wb = await readWorkbook(filepath);
+        return textContent(wb.sheetNames);
       }
 
       case 'read_sheet_data': {
@@ -226,15 +320,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (!fs.existsSync(filepath)) {
           return errorContent(`File not found: ${args.filename}`);
         }
-        const workbook = XLSX.readFile(filepath);
-        const sheetName = args.sheet || workbook.SheetNames[0];
-        const worksheet = workbook.Sheets[sheetName];
-        if (!worksheet) {
-          return errorContent(`Sheet not found: ${sheetName}. Available sheets: ${workbook.SheetNames.join(', ')}`);
-        }
-        let rows = XLSX.utils.sheet_to_json(worksheet);
+        const wb = await readWorkbook(filepath);
+        const sheet = getSheet(wb, args.sheet);
+        let rows = sheet.rows;
         if (rows.length === 0) {
-          return textContent(`Sheet '${sheetName}' is empty`);
+          return textContent(`Sheet '${sheet.name}' is empty`);
         }
         if (args.columns && args.columns.length > 0) {
           rows = rows.map(row => {
@@ -246,8 +336,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           });
         }
         const maxRows = args.max_rows || 100;
-        rows = rows.slice(0, maxRows);
-        return textContent(rows);
+        return textContent(rows.slice(0, maxRows));
       }
 
       case 'get_sheet_summary': {
@@ -255,29 +344,23 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (!fs.existsSync(filepath)) {
           return errorContent(`File not found: ${args.filename}`);
         }
-        const workbook = XLSX.readFile(filepath);
-        const sheetName = args.sheet || workbook.SheetNames[0];
-        const worksheet = workbook.Sheets[sheetName];
-        if (!worksheet) {
-          return errorContent(`Sheet not found: ${sheetName}. Available sheets: ${workbook.SheetNames.join(', ')}`);
+        const wb = await readWorkbook(filepath);
+        const sheet = getSheet(wb, args.sheet);
+        if (sheet.rows.length === 0) {
+          return textContent({ filename: args.filename, sheet: sheet.name, total_rows: 0, columns: [], sample_rows: [] });
         }
-        const rows = XLSX.utils.sheet_to_json(worksheet);
-        if (rows.length === 0) {
-          return textContent({ filename: args.filename, sheet: sheetName, total_rows: 0, columns: [], sample_rows: [] });
-        }
-        const columnNames = Object.keys(rows[0]);
+        const columnNames = sheet.headers.length > 0 ? sheet.headers : Object.keys(sheet.rows[0]);
         const columns = columnNames.map(col => {
-          const values = rows.map(r => r[col]);
+          const values = sheet.rows.map(r => r[col]);
           const nonEmpty = values.filter(v => v !== null && v !== undefined && v !== '').length;
           return { name: col, type: inferType(values), non_empty: nonEmpty };
         });
-        const sampleRows = rows.slice(0, 5);
         return textContent({
           filename: args.filename,
-          sheet: sheetName,
-          total_rows: rows.length,
+          sheet: sheet.name,
+          total_rows: sheet.rows.length,
           columns,
-          sample_rows: sampleRows,
+          sample_rows: sheet.rows.slice(0, 5),
         });
       }
 
@@ -286,15 +369,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (!fs.existsSync(filepath)) {
           return errorContent(`File not found: ${args.filename}`);
         }
-        const workbook = XLSX.readFile(filepath);
-        const sheetName = args.sheet || workbook.SheetNames[0];
-        const worksheet = workbook.Sheets[sheetName];
-        if (!worksheet) {
-          return errorContent(`Sheet not found: ${sheetName}. Available sheets: ${workbook.SheetNames.join(', ')}`);
-        }
-        let rows = XLSX.utils.sheet_to_json(worksheet);
+        const wb = await readWorkbook(filepath);
+        const sheet = getSheet(wb, args.sheet);
+        let rows = sheet.rows;
         if (rows.length === 0) {
-          return textContent(`Sheet '${sheetName}' is empty`);
+          return textContent(`Sheet '${sheet.name}' is empty`);
         }
 
         // Apply filters
@@ -325,7 +404,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
               return result;
             });
 
-            // Sort
             if (args.sort_by) {
               const order = args.sort_order === 'desc' ? -1 : 1;
               results.sort((a, b) => {
@@ -339,7 +417,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             return textContent(results.slice(0, maxRows));
           }
 
-          // No aggregations but group_by: return groups
           let results = Object.entries(groups).map(([key, groupRows]) => ({
             [args.group_by]: key,
             count: groupRows.length,
