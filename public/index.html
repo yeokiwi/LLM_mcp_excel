@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Excel Chat</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="app">
+    <!-- Sidebar -->
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-header">
+        <h2>Files</h2>
+        <button class="sidebar-toggle-close" id="sidebarClose" title="Close sidebar">&times;</button>
+      </div>
+      <div class="dropzone" id="dropzone">
+        <input type="file" id="fileInput" accept=".xlsx,.xls,.csv" hidden>
+        <p>Drop Excel/CSV files here<br><span class="dropzone-sub">or click to browse</span></p>
+      </div>
+      <div class="upload-progress" id="uploadProgress" hidden>
+        <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+        <span class="progress-text" id="progressText">Uploading...</span>
+      </div>
+      <ul class="file-list" id="fileList"></ul>
+    </aside>
+
+    <!-- Main Chat Area -->
+    <main class="chat-main">
+      <header class="chat-header">
+        <button class="sidebar-toggle" id="sidebarToggle" title="Toggle sidebar">&#9776;</button>
+        <h1>Excel Chat</h1>
+        <button class="btn-new-chat" id="newChatBtn">New Chat</button>
+      </header>
+      <div class="chat-messages" id="chatMessages">
+        <div class="welcome-message">
+          <h2>Welcome to Excel Chat</h2>
+          <p>Upload an Excel or CSV file to get started. Ask questions about your data in natural language.</p>
+        </div>
+      </div>
+      <div class="chat-input-area">
+        <textarea id="chatInput" placeholder="Ask about your data..." rows="1"></textarea>
+        <button id="sendBtn" title="Send">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M22 2L11 13"></path>
+            <path d="M22 2L15 22L11 13L2 9L22 2Z"></path>
+          </svg>
+        </button>
+      </div>
+    </main>
+  </div>
+
+  <!-- Drag overlay -->
+  <div class="drag-overlay" id="dragOverlay">
+    <div class="drag-overlay-content">
+      <p>Drop file to upload</p>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
